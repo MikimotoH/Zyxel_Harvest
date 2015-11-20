@@ -64,6 +64,7 @@ def downloadDir(ftp, model, rdir):
     try:
         files = ftp.listdir(rdir)
         startIdx = getStartIdx()
+        uprint('numFiles=%s'%len(files))
         for idx,fname in enumerate(files[startIdx:], startIdx):
             prevTrail += [idx]
             downloadFile(ftp, model, ftp.path.join(rdir, fname))
@@ -96,15 +97,18 @@ def main():
             ");")
 
         ftp = ftputil.FTPHost(zyxel_ftp, 'anonymous', '')
+        ftp.keep_alive()
         prevTrail=[]
         models = ftp.listdir('.')
         startDIdx = getStartIdx()
         for didx,model in enumerate(models[startDIdx:],startDIdx):
             uprint('didx=%d'%didx)
             prevTrail+=[didx]
-            fw = next((_ for _ in ftp.listdir(model) if _.lower().startswith('firmware')),None)
+            dirs = ftp.listdir(model)
+            fw = next((_ for _ in dirs if _.lower().startswith('firmware')),None)
             if not fw:
                 uprint('model "%s" has no firmware'%model)
+                prevTrail.pop()
                 continue
             uprint('model="%s"'%model)
             remoteDir = path.join(model,fw)
@@ -118,7 +122,6 @@ def main():
                 if ftp.path.isdir(rfile):
                     uprint('"%s" is a directory!'%rfile)
                     downloadDir(ftp, model, rfile)
-                    continue
                 else:
                     downloadFile(ftp, model, rfile)
                 prevTrail.pop()
