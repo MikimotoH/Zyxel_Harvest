@@ -408,3 +408,11 @@ def goToUrl(url:str):
     ulog('%s'%url)
     driver.get(url)
     waitUntil(isReadyState)
+
+def getInpValue(c):
+    global driver
+    return driver.execute_script("return document.querySelector('%s').value"%c)
+
+def setInpValue(c,v):
+    global driver
+    return driver.execute_script("document.querySelector('%s').value='%s'"%(c,v))

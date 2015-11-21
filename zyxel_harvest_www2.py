@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # coding: utf-8
 import harvest_utils
-from harvest_utils import waitVisible, waitText, getElems, getFirefox,driver,waitTextChanged, getElemText, elemWithText, waitClickable, waitUntilStable, isReadyState,waitUntil,retryStable,getNumElem
+from harvest_utils import waitVisible, waitText, getElems, getFirefox,driver,waitTextChanged, getElemText, elemWithText, waitClickable, waitUntilStable, isReadyState,waitUntil,retryStable,getNumElem,goToUrl
 from selenium.common.exceptions import NoSuchElementException, TimeoutException, StaleElementReferenceException, WebDriverException
 from selenium.webdriver.remote.webelement import WebElement
 from selenium.webdriver.common.keys import Keys
@@ -37,11 +37,6 @@ def glocals()->dict:
     ret.update(globals())
     return ret
 
-def goToUrl(url:str):
-    global driver
-    ulog('%s'%url)
-    driver.get(url)
-    waitUntil(isReadyState)
 
 def getScriptName():
     from os import path
@@ -121,7 +116,7 @@ def upsertOneVersion(row,imgUrl,prodName):
         fwVer = row.find_element_by_css_selector('td.versionTd').text.strip()
         pageUrl = driver.current_url
         ulog('row.text="%s"'%repr(row.text))
-        fileUrls = [_.get_attribute('data-filelink') for _ in row.find_elements_by_css_selector(' td:nth-child(7) > a') if _.is_displayed()]
+        fileUrls = [_.get_attribute('data-filelink') for _ in row.find_elements_by_css_selector('td.downloadTd a') if _.is_displayed() ]
         fileUrl = '\n'.join(_ for _ in fileUrls if _)
         relDate = guessDate(row.text)
         trailStr=str(prevTrail)
@@ -186,30 +181,20 @@ def versionWalker():
         driver.save_screenshot(getScriptName()+'_'+getFuncName()+'_excep.png')
 
 
-
 def modelWalker():
     global driver, prevTrail, modelName
+    rootUrl='http://www2.zyxel.com/us/en/support/DownloadLandingSR.shtml?c=us&l=en&md=ARMOR%20Z1%20%28NBG6816%29'
+    rootUrl='http://www2.zyxel.com/us/en/support/DownloadLandingSR.shtml?c=us&l=en&md='
     try:
         startIdx = getStartIdx()
         ulog('len(allModels)=%d'%len(allModels))
         for idx in range(startIdx,len(allModels)):
             ulog('idx=%s'%idx)
-            # click 'Enter model number here'
-            btn = waitClickable('button[data-id=modelName]')
-            btn.click()
-            time.sleep(0.1)
-            inp = waitClickable('.form-control')
-            inp.click()
-            inp.clear()
             modelName=allModels[idx]
-            inp.send_keys(modelName + Keys.ENTER)
-            time.sleep(0.1)
-            assert modelName == btn.get_attribute('title').strip()
             ulog('modelName="%s"'%modelName)
-
-            waitClickable('#searchBtn').click()
-            time.sleep(0.1)
+            goToUrl(rootUrl+parse.quote(modelName))
             waitUntil(isReadyState)
+
             # click "Firmware" tab
             tab = elemWithText('li.resp-tab-item','Firmware')
             if not tab:
@@ -224,9 +209,8 @@ def modelWalker():
                 try:
                     imgUrl=waitVisible('.productPic img.img-responsive',4,1).get_attribute('src')
                 except TimeoutException:
-                    thumbImg = waitVisible('span.filter-option img', 2,0.9)
-                    imgUrl = thumbImg.get_attribute('src').strip()
-                    assert imgUrl.startswith('http')
+                    imgUrl=None
+                assert imgUrl is None or imgUrl.startswith('http')
                 trailStr=str(prevTrail+[idx])
                 sql("INSERT OR REPLACE INTO TFiles(model,prod_name,page_url,"
                     "image_url,tree_trail) VALUES(:modelName, :prodName, :pageUrl,"
