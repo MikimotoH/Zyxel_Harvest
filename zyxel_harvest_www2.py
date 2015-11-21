@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # coding: utf-8
 import harvest_utils
-from harvest_utils import waitVisible, waitText, getElems, getFirefox,driver,waitTextChanged, getElemText, elemWithText, waitClickable, waitUntilStable, isReadyState,waitUntil,retryStable
+from harvest_utils import waitVisible, waitText, getElems, getFirefox,driver,waitTextChanged, getElemText, elemWithText, waitClickable, waitUntilStable, isReadyState,waitUntil,retryStable,getNumElem
 from selenium.common.exceptions import NoSuchElementException, TimeoutException, StaleElementReferenceException, WebDriverException
 from selenium.webdriver.remote.webelement import WebElement
 from selenium.webdriver.common.keys import Keys
@@ -19,12 +19,15 @@ import random
 import math
 import html2text
 from urllib import parse
+from os import path
 
 
 driver,conn=None,None
 modelName=''
 prevTrail=[]
 startTrail=[]
+rootUrl='http://www2.zyxel.com/us/en/support/download_landing.shtml'
+allModels=[]
 
 def glocals()->dict:
     """ globals() + locals()
@@ -112,7 +115,7 @@ def guessDate(txt:str)->datetime:
         ipdb.set_trace()
         traceback.print_exc()
 
-def upsertOneVersion(row,imageUrl,prodName):
+def upsertOneVersion(row,imgUrl,prodName):
     global driver,prevTrail,modelName
     try:
         fwVer = row.find_element_by_css_selector('td.versionTd').text.strip()
@@ -125,7 +128,7 @@ def upsertOneVersion(row,imageUrl,prodName):
         sql("INSERT OR REPLACE INTO TFiles(model, prod_name, "
             " fw_ver, rel_date, image_url, page_url, file_url, "
             " tree_trail) VALUES (:modelName,:prodName,"
-            " :fwVer,:relDate,:imageUrl,:pageUrl,:fileUrl,"
+            " :fwVer,:relDate,:imgUrl,:pageUrl,:fileUrl,"
             " :trailStr)",glocals())
         ulog('UPSERT "%(modelName)s","%(fwVer)s",%(trailStr)s'%glocals())
     except Exception as ex:
@@ -141,10 +144,10 @@ def versionWalker():
         assert len(rows)==1
         row = rows[0]
         try:
-            imageUrl=waitVisible('.productPic img.img-responsive',4,1).get_attribute('src')
+            imgUrl=waitVisible('.productPic img.img-responsive',4,1).get_attribute('src')
         except TimeoutException:
             ulog('no Picture!')
-            imageUrl=None
+            imgUrl=None
         prodName = [_.text for _ in getElems('div.sectionTitle p.hidden-xs') if _.text.strip()]
         if prodName:
             assert len(prodName)==1
@@ -158,7 +161,7 @@ def versionWalker():
             ulog('only one version')
             ulog('idx=%s'%idx)
             prevTrail+=[idx]
-            upsertOneVersion(row,imageUrl,prodName)
+            upsertOneVersion(row,imgUrl,prodName)
             prevTrail.pop()
             return
         verBtn.click()
@@ -172,7 +175,7 @@ def versionWalker():
             versions[idx].click()
             time.sleep(0.1)
             prevTrail+=[idx]
-            upsertOneVersion(row,imageUrl,prodName)
+            upsertOneVersion(row,imgUrl,prodName)
             prevTrail.pop()
             if idx < numVersions-1:
                 verBtn.click()
@@ -188,7 +191,8 @@ def modelWalker():
     global driver, prevTrail, modelName
     try:
         startIdx = getStartIdx()
-        for idx in range(startIdx,sys.maxsize):
+        ulog('len(allModels)=%d'%len(allModels))
+        for idx in range(startIdx,len(allModels)):
             ulog('idx=%s'%idx)
             # click 'Enter model number here'
             btn = waitClickable('button[data-id=modelName]')
@@ -196,17 +200,11 @@ def modelWalker():
             time.sleep(0.1)
             inp = waitClickable('.form-control')
             inp.click()
-            if modelName=='':
-                for _ in range(idx+1):
-                    inp.send_keys(Keys.DOWN)
-            else:
-                inp.send_keys(Keys.DOWN)
-            inp.send_keys(Keys.ENTER)
+            inp.clear()
+            modelName=allModels[idx]
+            inp.send_keys(modelName + Keys.ENTER)
             time.sleep(0.1)
-            newModelName = btn.get_attribute('title')
-            if newModelName == modelName:
-                break
-            modelName = newModelName
+            assert modelName == btn.get_attribute('title').strip()
             ulog('modelName="%s"'%modelName)
 
             waitClickable('#searchBtn').click()
@@ -222,17 +220,71 @@ def modelWalker():
                     prodName=prodName[0]
                 else:
                     prodName=None
+                pageUrl=driver.current_url
+                try:
+                    imgUrl=waitVisible('.productPic img.img-responsive',4,1).get_attribute('src')
+                except TimeoutException:
+                    thumbImg = waitVisible('span.filter-option img', 2,0.9)
+                    imgUrl = thumbImg.get_attribute('src').strip()
+                    assert imgUrl.startswith('http')
                 trailStr=str(prevTrail+[idx])
-                sql("INSERT OR REPLACE INTO TFiles(model,prod_name,tree_trail)"
-                    "VALUES(:modelName,:prodName,:trailStr)", glocals())
-                ulog('UPSERT "%(modelName)s" "%(prodName)s",%(trailStr)s'
-                    %glocals())
+                sql("INSERT OR REPLACE INTO TFiles(model,prod_name,page_url,"
+                    "image_url,tree_trail) VALUES(:modelName, :prodName, :pageUrl,"
+                    ":imgUrl,:trailStr)", glocals())
+                ulog('UPSERT "%(modelName)s" "%(prodName)s",%(trailStr)s,'
+                    '%(pageUrl)s' %glocals())
                 continue
             tab.click()
             time.sleep(0.1)
             prevTrail+=[idx]
             versionWalker()
             prevTrail.pop()
+    except Exception as ex:
+        ipdb.set_trace()
+        traceback.print_exc()
+        driver.save_screenshot(getScriptName()+'_'+getFuncName()+'_excep.png')
+
+
+def getAllModels():
+    global driver, allModels
+    try:
+        if path.exists('zyxel_models.txt') and \
+                path.getsize('zyxel_models.txt')>2 and \
+                time.time() - path.getmtime('zyxel_models.txt')<3600*1:
+            with open('zyxel_models.txt','r',encoding='utf-8') as fin:
+                lines = fin.read()
+            allModels=[_ for _ in lines.splitlines()]
+            allModels=[_.strip() for _ in allModels if _.strip()]
+            return
+
+        # click 'Enter model number here'
+        btn = waitClickable('button[data-id=modelName]')
+        btn.click()
+        time.sleep(0.1)
+        inp = waitClickable('.form-control')
+        inp.click()
+        inp.send_keys(Keys.UP)
+        time.sleep(0.1)
+        inp.send_keys(Keys.UP)
+        oldNumModels = getNumElem('div.dropdown-menu.open ul li a')
+        while True:
+            inp.send_keys(Keys.UP)
+            time.sleep(0.1)
+            inp.send_keys(Keys.UP)
+            numModels = getNumElem('div.dropdown-menu.open ul li a')
+            ulog('numModels=%d'%numModels)
+            if numModels == oldNumModels:
+                break
+            oldNumModels = numModels
+        allModels = [_.text for _ in getElems('div.dropdown-menu.open ul li a')]
+        allModels = [_.strip() for _ in allModels if _.strip()]
+        allModels = [_ for _ in allModels if not _.lower().startswith('enter model ')]
+        ulog('len(allModels)=%d'%len(allModels))
+
+        with open('zyxel_models.txt','w',encoding='utf-8') as fout:
+            fout.write('\n'.join(_ for _ in allModels))
+        btn.click()
+
     except Exception as ex:
         ipdb.set_trace()
         traceback.print_exc()
@@ -263,8 +315,8 @@ def main():
         # driver.implicitly_wait(2.0)
         harvest_utils.driver=driver
         prevTrail=[]
-        rootUrl='http://www2.zyxel.com/us/en/support/download_landing.shtml'
         goToUrl(rootUrl)
+        getAllModels()
         modelWalker()
         driver.quit()
         conn.close()
