@@ -21,7 +21,10 @@ import math
 import html2text
 from urllib import parse
 from os import path
+from infix_operator import Infix
 
+css0 = Infix(lambda e,s: e.find_element_by_css_selector(s))
+csss = Infix(lambda e,s: e.find_elements_by_css_selector(s))
 
 driver,conn=None,None
 category,productName,model='','',''
@@ -100,147 +103,166 @@ def retryA(statement, timeOut:float=6.2, pollFreq:float=0.3):
 
 
 def guessDate(txt:str)->datetime:
-    """ txt = '2015/11/06' """
+    """ txt = '07-18-2014' """
     try:
-        m = re.search(r'\d{4}/\d{2}/\d{2}', txt)
-        return datetime.strptime(m.group(0), '%Y/%m/%d')
-    except Exception as ex:
-        ipdb.set_trace()
-        traceback.print_exc()
-def guessFileSize(txt:str)->int:
-    """ txt='27.29 MBytes'
-    """
-    try:
-        m = re.search(r'(\d+\.?\d+)\s*(MB|KB)', txt, re.I)
-        if not m:
-            ulog('error txt="%s"'%txt)
-            return 0
-        unitDic=dict(MB=1024**2,KB=1024)
-        unitTxt = m.group(2).upper()
-        return int(float(m.group(1)) * unitDic[unitTxt] )
+        m = re.search(r'\d{2}-\d{2}-\d{4}', txt)
+        return datetime.strptime(m.group(0), '%m-%d-%Y')
     except Exception as ex:
         ipdb.set_trace()
         traceback.print_exc()
 
 
-def guessVersion(txt:str)->int:
-    """ version 3.0.0.4.378.9313 """
+
+
+def upsert(tr:WebElement, fwVer:str):
+    global prevTrail,driver
     try:
-        #m = re.search(r'version:?\s*([\d\.]+)', txt, re.I)
-        # if not m:
-        m = re.search(r'\d+\.[\d\.]+(_[A-Z]+)?', txt.splitlines()[0], re.I)
-        return m.group(0)
+        trTxt = tr.text
+        relDate = guessDate(trTxt)
+        downLinks = tr/csss/'td:nth-child(7) div:nth-child(1) > a'
+        fileUrls = [_.get_attribute('data-filelink') for _ in downLinks]
+        fileUrls = [_ for _ in fileUrls]
+        fileUrl = '\n'.join(_ for _ in fileUrls)
+        trailStr=str(prevTrail+[idx])
+        pageUrl = driver.current_url
+        model = waitText('div.container:nth-child(7) > div > div > h2')
+        prodName = waitText('div.container:nth-child(7) > div:nth-child(1) > div:nth-child(1) > p:nth-child(2)')
+        sql("INSERT OR REPLACE INTO TFiles("
+            " model, prod_name, fw_ver, rel_date, "
+            " page_url, file_url, tree_trail) VALUES"
+            "(:model, :prodName, :fwVer,:relDate, "
+            ":pageUrl, :fileUrl, :trailStr)", glocals())
+        ulog('UPSERT "%(model)s", "%(fwVer)s", "%(relDate)s", '
+            ' "%(fileUrl)s", %(trailStr)s '%glocals())
     except Exception as ex:
         ipdb.set_trace()
         traceback.print_exc()
 
-
-def enterFrame(iframeId:str):
-    global driver
-    prev_url=driver.current_url
-    url=waitVisible('iframe[id=%s]'%iframeId).get_attribute('src')
-    ulog('%s => %s'%(prev_url,url))
-    driver.get(url)
+def versionWalker(tr:WebElement):
+    global driver, prevTrail
     try:
-        retryUntilTrue(isReadyState, 10, 2)
-    except TimeoutException as ex:
-        print(ex)
-        pass
-
-def fileEnumer():
-    global driver,prevTrail,modelName
-    CSS=driver.find_element_by_css_selector
-    CSSs=driver.find_elements_by_css_selector
-    try:
-        try:
-            waitClickable('#lisupport a',15,1.6).click()
-        except TimeoutException:
-            driver.save_screenshot('asus_no_firmware_download.png')
-            ulog('No firmware download for "%s" !'%modelName)
-            return
-        enterFrame('ifame_auto_size')
-        # click 'Driver & Tools'
-        waitClickable('#a_support_tab_Download',40,2).click()
-        # switch to frame
-        enterFrame('ifame_auto_size')
-        # open dropdown list to select "Others" OS
-        waitClickable('#mainzone_Download2_btn_select_os',10,1).click()
-        retryA(lambda:elemWithText('ul.dropdown-menu.os a', "Others").click())
-        try:
-            # expand firmware dropdown
-            waitClickable('#btn_type_20',20,1).click()
-        except TimeoutException:
-            driver.save_screenshot('asus_no_firmware_download_2.png')
-            ulog('No firmware download for" %s"!'%modelName)
-            return
-        # retryA(lambda:elemWithText('#download a','Firmware').click(), 20,1)
-        waitUntilStable('#div_type_20',3,0.4)
-        tables = [_ for _ in CSSs('#div_type_20 table') 
-            if getElemText(_).startswith('Description')]
-        numTables = len(tables)
-        ulog('numTables=%s'%numTables)
-        versions = [getElemText(_) for _ in CSSs('#div_type_20 p')]
-        assert len(versions)==numTables
-        pageUrl=driver.current_url
+        btn=tr.find_element_by_css_selector('button')
+        btn.click()
+        time.sleep(0.1)
+        waitUnti(lambda:all(_.is_displayed() for _ in tr/csss/'ul li a'))
+        versions = tr/csss/'ul li a'
+        numVersion = len(versions)
         startIdx = getStartIdx()
-        for idx in range(startIdx, numTables):
-            desc = tables[idx].text
-            relDate = guessDate(desc)
-            fileSize = guessFileSize(desc)
-            fwVer = guessVersion(versions[idx])
-            fileUrl = tables[idx].find_element_by_css_selector('a').get_attribute('href')
-            trailStr=str(prevTrail+[idx])
-            sql("INSERT OR REPLACE INTO TFiles("
-                " model, fw_ver, rel_date, file_size, fw_desc, "
-                " page_url, file_url, tree_trail) VALUES"
-                "(:modelName,:fwVer,:relDate, :fileSize, :desc,"
-                ":pageUrl, :fileUrl, :trailStr)", glocals())
-            ulog('UPSERT "%(modelName)s", "%(fwVer)s", "%(relDate)s", '
-                '%(fileSize)s, "%(fileUrl)s", %(trailStr)s '%glocals())
+        for idx in range(startIdx, numVersions):
+            ulog('version idx=%s'%idx)
+            fwVer = versions[idx].text.strip()
+            versions[idx].click()
+            upsert(tr, fwVer)
+            if idx < numVersions-1:
+                btn.click()
+                time.sleep(0.1)
     except Exception as ex:
         ipdb.set_trace()
         traceback.print_exc()
-        driver.save_screenshot(getScriptName()+'_'+getFuncName()+'_excep.png')
 
 
+
+def rowWalker():
+    global driver, prevTrail
+    try:
+        rows = driver.find_elements_by_css_selector('table.blueTable:nth-child(1) tr')
+        waitUntil(lambda:all(_.is_displayed() for _ in rows))
+        rows = [_ for _ in rows if _.text.startswith('Firmware')]
+        numRows = len(rows)
+        startIdx = getStartIdx()
+        for idx in range(startIdx, numRows):
+            ulog('row idx=%s'%idx)
+            if not rows[idx].text.startswith('Firmware\n'):
+                continue
+            prevTrail += [idx]
+            versionWalker(rows[idx])
+            prevTrail.pop()
+    except Exception as ex:
+        ipdb.set_trace()
+        traceback.print_exc()
+        
+
+def pageWalker():
+    global driver, prevTrail
+    try:
+        rowWalker()
+        nextBtn=waitClickable('.arrowNext')
+        nextBtn.click()
+        rowWalker()
+    except Exception as ex:
+        ipdb.set_trace()
+        traceback.print_exc()
+
+def tabWalker():
+    global driver, prevTrail
+    try:
+        tab = elemWithText('li.resp-tab-item', 'DOWNLOAD')
+        tab.click()
+        time.sleep(0.1)
+        numTabs = len(tabs)
+        startIdx = getStartIdx()
+        for idx in range(startIdx,numTabs):
+            ulog('tab idx=%s'%idx)
+            if not tabs[idx].text.strip().startswith('DOWNLOAD'):
+                continue
+            prevTrail+=[idx]
+            pageWalker()
+    except Exception as ex:
+        ipdb.set_trace()
+        traceback.print_exc()
+
+
+rootUrl='http://www.zyxel.com/us/en/support/download_landing.shtml'
+# ALL, Tech Doc, Datasheet, Firmware, Certificate  05-22-2015
+rootUrl='http://www.zyxel.com/us/en/support/support_landing.shtml'
+# ALL, DOWNLOAD LIBRARY, KNOWLEDGE BASE, 05-22-2015, btn'More'
+rootUrl='http://www.zyxel.com/us/en/support/SupportLandingSR.shtml?c=us&l=en'
+# ALL, DOWNLOAD LIBRARY, KNOWLEDGE BASE, 05-22-2015, btn'More'
+rootUrl='http://www.zyxel.com/support/DownloadLandingSR.shtml?c=gb&l=en&md=NSA325'
+# ALL Tech Doc,Datasheet,Firmware,Software,Certificate, May 22,2015, '.fa-angle-right'
 
 models=[]
-rootUrl='http://www.zyxel.com/us/en/support/support_landing.shtml'
-
 def modelWalker():
     global driver, prevTrail, models
     act=ActionChains(driver)
+    CSSs = driver.find_elements_by_css_selector
     try:
-        for model in models:
+        startIdx = getStartIdx()
+        for idx, model in enumerate(models[startIdx:],len(models)):
+            ulog('idx=%s, model="%s"'%(idx,model))
             goToUrl(rootUrl)
-            btn=waitVisible('.search-select button')
+            btn=waitClickable('.search-select button')
             act.move_to_element(btn).click(btn).perform()
-            inp=waitVisible('.input-block-level')
+            inp=waitClickable('.input-block-level')
             act.move_to_element(inp).click(inp).perform()
             act.send_keys(model + Keys.DOWN + Keys.ENTER).perform()
             time.sleep(0.1)
             waitUntil(isReadyState)
             ulog('url='+driver.current_url)
-            title = CSS('.lightGrayBg > div > div > div > h2').text
-            ulog('title='+title)
+            title = waitText('.lightGrayBg > div > div > div > h2')
+            ulog('title='+title) 
+            # 'Search by Model Number' or 'No Matches Found'
             if title.startswith('No Matches Found'):
                 continue
-            moreBtn=waitVisible('a.moreBtn:nth-child(3)')
-            moreBtn.click()
-
+            prevTrail+=[idx]
+            tabWalker()
+            prevTrail.pop()
+    except Exception as ex:
+        ipdb.set_trace()
+        traceback.print_exc()
     
 
 
 
 def getAllModels():
-    global driver, prevTrail, models
-    CSSs=driver.find_elements_by_css_selector
-    CSS=driver.find_element_by_css_selector
+    global driver, models
     act=ActionChains(driver)
     numElm=lambda c:driver.execute_script("return $('%s').length"%c)
     try:
-        if path.exists('zyxel_models.txt') and path.getsize('zyxel_models.txt')>0:
-            with open('zyxel_models.txt','r',encoding='utf-8-sig') as fin:
+        if path.exists('zyxel_models.txt') and \
+                path.getsize('zyxel_models.txt')>0 and \
+                time.time()-path.getmtime('zyxel_models.txt') < 3600*24*7:
+            with open('zyxel_models.txt','r',encoding='utf-8') as fin:
                 models=[]
                 for _ in fin:
                     models += [_]
@@ -265,10 +287,10 @@ def getAllModels():
             numModels = numModels2
             uprint('numModels=%s'%numModels)
         uprint('numModels=%s'%numModels)
-        models = [_.get_attribute('data') for _ in CSSs('#searchDropUl li')]
+        models = [_.get_attribute('data') for _ in getElems('#searchDropUl li')]
         models = [_ for _ in models if _]
         uprint('len(models)=%s'%len(models))
-        with open('zyxel_models.txt', 'w', encoding='utf-8-sig') as fout:
+        with open('zyxel_models.txt', 'w', encoding='utf-8') as fout:
             for m in models:
                 fout.write(m + '\n')
     except Exception as ex:
@@ -286,14 +308,16 @@ def main():
         sql("CREATE TABLE IF NOT EXISTS TFiles("
             "id INTEGER NOT NULL,"
             "model TEXT," # NSA320
-            "product_name TEXT," # 2-Bay Power Media Server
+            "prod_name TEXT," # 2-Bay Power Media Server
             "fw_ver TEXT," # 4.70(AFO.0)C0
-            "rel_date DATE," # 07-18-2014
+            "rel_date DATE," # '07-18-2014' or 'Jul 18, 2014'
             "file_size INTEGER," # 
-            "page_url TEXT," # http://www.zyxel.com/us/en/support/DownloadLandingSR.shtml?c=us&l=en&kbid=MD09138&md=NSA320#searchZyxelTab4
+            "page_url TEXT," 
+            # http://www.zyxel.com/us/en/support/DownloadLandingSR.shtml?c=us&l=en&kbid=MD09138&md=NSA320#searchZyxelTab4
+            # http://www.zyxel.com/support/DownloadLandingSR.shtml?c=gb&l=en&kbid=MD09138&md=NSA320
             "file_url TEXT," # data-filelink="ftp://ftp2.zyxel.com/NSA320/firmware/NSA320_4.70(AFO.1)C0.zip"
             "tree_trail TEXT," # [26, 2, 1, 0, 0]
-            "file_sha1 TEXT," # 5d3bc16eec2f6c34a5e46790b513093c28d8924a
+            "file_sha1 TEXT," # 
             "PRIMARY KEY (id)"
             "UNIQUE(model,fw_ver)"
             ")")

@@ -123,7 +123,7 @@ class Waiter:
 
 # -------
 
-def getFirefox(tempDir='/tmp', showImage=1, unstable=False):
+def getFirefox(tempDir='/tmp', showImage=1, unstable=False) -> selenium.webdriver.firefox.webdriver.WebDriver :
     """get Firefox Webdriver object
     :param showImage: 2 = don't show, 1=show
     """
