@@ -15,6 +15,7 @@ from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.remote.webelement import WebElement
 from my_utils import uprint,ulog
 from contextlib import contextmanager
+import selenium
 
 
 class Waiter:

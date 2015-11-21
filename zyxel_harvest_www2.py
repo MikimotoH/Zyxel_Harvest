@@ -26,6 +26,14 @@ modelName=''
 prevTrail=[]
 startTrail=[]
 
+def glocals()->dict:
+    """ globals() + locals()
+    """
+    import inspect
+    ret = dict(inspect.stack()[1][0].f_locals)
+    ret.update(globals())
+    return ret
+
 def goToUrl(url:str):
     global driver
     ulog('%s'%url)
@@ -104,42 +112,67 @@ def guessDate(txt:str)->datetime:
         ipdb.set_trace()
         traceback.print_exc()
 
+def upsertOneVersion(row,imageUrl,prodName):
+    global driver,prevTrail,modelName
+    try:
+        fwVer = row.find_element_by_css_selector('td.versionTd').text.strip()
+        pageUrl = driver.current_url
+        ulog('row.text="%s"'%repr(row.text))
+        fileUrls = [_.get_attribute('data-filelink') for _ in row.find_elements_by_css_selector(' td:nth-child(7) > a') if _.is_displayed()]
+        fileUrl = '\n'.join(_ for _ in fileUrls if _)
+        relDate = guessDate(row.text)
+        trailStr=str(prevTrail)
+        sql("INSERT OR REPLACE INTO TFiles(model, prod_name, "
+            " fw_ver, rel_date, image_url, page_url, file_url, "
+            " tree_trail) VALUES (:modelName,:prodName,"
+            " :fwVer,:relDate,:imageUrl,:pageUrl,:fileUrl,"
+            " :trailStr)",glocals())
+        ulog('UPSERT "%(modelName)s","%(fwVer)s",%(trailStr)s'%glocals())
+    except Exception as ex:
+        ipdb.set_trace()
+        traceback.print_exc()
+        driver.save_screenshot(getScriptName()+'_'+getFuncName()+'_excep.png')
 
 def versionWalker():
-    global driver,prevTrail,modelName
+    global driver,prevTrail
     try:
         rows = getElems('#Firmware tr')
         rows = [_ for _ in rows if _.text.startswith('Firmware')]
         assert len(rows)==1
         row = rows[0]
-        verBtn = row.find_element_by_css_selector('button')
+        try:
+            imageUrl=waitVisible('.productPic img.img-responsive',4,1).get_attribute('src')
+        except TimeoutException:
+            ulog('no Picture!')
+            imageUrl=None
+        prodName = [_.text for _ in getElems('div.sectionTitle p.hidden-xs') if _.text.strip()]
+        if prodName:
+            assert len(prodName)==1
+            prodName=prodName[0]
+        else:
+            prodName=None
+        try:
+            verBtn = row.find_element_by_css_selector('button')
+        except NoSuchElementException:
+            idx=0
+            ulog('only one version')
+            ulog('idx=%s'%idx)
+            prevTrail+=[idx]
+            upsertOneVersion(row,imageUrl,prodName)
+            prevTrail.pop()
+            return
         verBtn.click()
         versions = row.find_elements_by_css_selector('ul li a')
-        pageUrl = driver.current_url
-        imageUrl=waitVisible('.productPic img.img-responsive').get_attribute('src')
-        prodName = [_.text for _ in CSSs('div.sectionTitle p.hidden-xs') if _.text.strip()]
-        assert len(prodName)==1
-        prodName=prodName[0]
         startIdx = getStartIdx()
         numVersions = len(versions)
+        ulog('numVersions=%s'%numVersions)
         for idx in range(startIdx, numVersions):
             ulog('idx=%s'%idx)
-            fwVer = versions[idx].text.strip()
-            ulog('click "%s"'%fwVer)
+            ulog('click "%s"'%versions[idx].text.strip())
             versions[idx].click()
             time.sleep(0.1)
-            ulog('row.text="%s"'%row.text)
-            fileUrls = [_.get_attribute('data-filelink') for _ in row.find_elements_by_css_selector(' td:nth-child(7) > a') if _.is_displayed()]
-            fileUrl = '\n'.join(_ for _ in fileUrls if _)
-            relDate = guessDate(row.text)
             prevTrail+=[idx]
-            trailStr=str(prevTrail)
-            sql("INSERT OR REPLACE INTO TFiles(model, prod_name, "
-                " fw_ver, rel_date, image_url, page_url, file_url, "
-                " tree_trail) VALUES (:modelName,:prodName,"
-                " :fwVer,:relDate,:imageUrl,:pageUrl,:fileUrl,"
-                " :trailStr)",locals())
-            ulog('UPSERT "%(modelName)s","%(fwVer)s",%(trailStr)s'%locals())
+            upsertOneVersion(row,imageUrl,prodName)
             prevTrail.pop()
             if idx < numVersions-1:
                 verBtn.click()
@@ -151,22 +184,22 @@ def versionWalker():
 
 
 
-rootUrl='http://www2.zyxel.com/us/en/support/download_landing.shtml'
 def modelWalker():
     global driver, prevTrail, modelName
-    numElm=lambda c:len(CSSs(c))
     try:
         startIdx = getStartIdx()
         for idx in range(startIdx,sys.maxsize):
             ulog('idx=%s'%idx)
-            goToUrl(rootUrl)
             # click 'Enter model number here'
             btn = waitClickable('button[data-id=modelName]')
             btn.click()
             time.sleep(0.1)
             inp = waitClickable('.form-control')
             inp.click()
-            for _ in range(idx+1):
+            if modelName=='':
+                for _ in range(idx+1):
+                    inp.send_keys(Keys.DOWN)
+            else:
                 inp.send_keys(Keys.DOWN)
             inp.send_keys(Keys.ENTER)
             time.sleep(0.1)
@@ -183,6 +216,17 @@ def modelWalker():
             tab = elemWithText('li.resp-tab-item','Firmware')
             if not tab:
                 ulog('no Firmware tab,bypass!')
+                prodName = [_.text for _ in getElems('div.sectionTitle p.hidden-xs') if _.text.strip()]
+                if prodName:
+                    assert len(prodName)==1
+                    prodName=prodName[0]
+                else:
+                    prodName=None
+                trailStr=str(prevTrail+[idx])
+                sql("INSERT OR REPLACE INTO TFiles(model,prod_name,tree_trail)"
+                    "VALUES(:modelName,:prodName,:trailStr)", glocals())
+                ulog('UPSERT "%(modelName)s" "%(prodName)s",%(trailStr)s'
+                    %glocals())
                 continue
             tab.click()
             time.sleep(0.1)
@@ -199,14 +243,14 @@ def main():
     try:
         startTrail = [int(re.search(r'\d+', _).group(0)) for _ in sys.argv[1:]]
         ulog('startTrail=%s'%startTrail)
-        conn=sqlite3.connect('asus.sqlite3')
+        conn=sqlite3.connect('zyxel.sqlite3')
         sql("CREATE TABLE IF NOT EXISTS TFiles("
             "id INTEGER NOT NULL,"
             "model TEXT," # NBG5715
             "prod_name TEXT," # NBG5715
             "fw_ver TEXT," # V1.00(AAAG.8)C0
             "rel_date DATE," # 06-18-2015
-            "image_url TEXT," http://www2.zyxel.com/uploads/images/img_nbg5715_p_01_380.gif
+            "image_url TEXT," # http://www2.zyxel.com/uploads/images/img_nbg5715_p_01_380.gif
             "page_url TEXT," # http://www2.zyxel.com/us/en/support/DownloadLandingSR.shtml?c=us&l=en&kbid=M-00022&md=NBG5715#searchZyxelTab4
             "file_url TEXT," # ftp://ftp2.zyxel.com/NBG5715/firmware/NBG5715_V1.00(AAAG.8)C0.zip
             "tree_trail TEXT," # [26, 2, 1, 0, 0]
@@ -219,6 +263,8 @@ def main():
         # driver.implicitly_wait(2.0)
         harvest_utils.driver=driver
         prevTrail=[]
+        rootUrl='http://www2.zyxel.com/us/en/support/download_landing.shtml'
+        goToUrl(rootUrl)
         modelWalker()
         driver.quit()
         conn.close()
