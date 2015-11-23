@@ -131,11 +131,40 @@ def upsertOneVersion(row,imgUrl,prodName):
         traceback.print_exc()
         driver.save_screenshot(getScriptName()+'_'+getFuncName()+'_excep.png')
 
+def upsertOneModel():
+    global driver, prevTrail, modelName
+    try:
+        prodName = [_.text for _ in getElems('div.sectionTitle p.hidden-xs') if _.text.strip()]
+        if prodName:
+            assert len(prodName)==1
+            prodName=prodName[0]
+        else:
+            prodName=None
+        pageUrl=driver.current_url
+        try:
+            imgUrl=waitVisible('.productPic img.img-responsive',4,1).get_attribute('src')
+        except TimeoutException:
+            imgUrl=None
+        assert imgUrl is None or imgUrl.startswith('http')
+        trailStr=str(prevTrail)
+        sql("INSERT OR REPLACE INTO TFiles(model,prod_name,page_url,"
+            "image_url,tree_trail) VALUES(:modelName, :prodName, :pageUrl,"
+            ":imgUrl,:trailStr)", glocals())
+        ulog('UPSERT "%(modelName)s" "%(prodName)s",%(trailStr)s,'
+            '%(pageUrl)s' %glocals())
+    except Exception as ex:
+        ipdb.set_trace()
+        traceback.print_exc()
+        driver.save_screenshot(getScriptName()+'_'+getFuncName()+'_excep.png')
+
 def versionWalker():
     global driver,prevTrail
     try:
         rows = getElems('#Firmware tr')
         rows = [_ for _ in rows if _.text.startswith('Firmware')]
+        if not rows:
+            upsertOneModel()
+            return
         assert len(rows)==1
         row = rows[0]
         try:
@@ -183,7 +212,6 @@ def versionWalker():
 
 def modelWalker():
     global driver, prevTrail, modelName
-    rootUrl='http://www2.zyxel.com/us/en/support/DownloadLandingSR.shtml?c=us&l=en&md=ARMOR%20Z1%20%28NBG6816%29'
     rootUrl='http://www2.zyxel.com/us/en/support/DownloadLandingSR.shtml?c=us&l=en&md='
     try:
         startIdx = getStartIdx()
@@ -199,24 +227,9 @@ def modelWalker():
             tab = elemWithText('li.resp-tab-item','Firmware')
             if not tab:
                 ulog('no Firmware tab,bypass!')
-                prodName = [_.text for _ in getElems('div.sectionTitle p.hidden-xs') if _.text.strip()]
-                if prodName:
-                    assert len(prodName)==1
-                    prodName=prodName[0]
-                else:
-                    prodName=None
-                pageUrl=driver.current_url
-                try:
-                    imgUrl=waitVisible('.productPic img.img-responsive',4,1).get_attribute('src')
-                except TimeoutException:
-                    imgUrl=None
-                assert imgUrl is None or imgUrl.startswith('http')
-                trailStr=str(prevTrail+[idx])
-                sql("INSERT OR REPLACE INTO TFiles(model,prod_name,page_url,"
-                    "image_url,tree_trail) VALUES(:modelName, :prodName, :pageUrl,"
-                    ":imgUrl,:trailStr)", glocals())
-                ulog('UPSERT "%(modelName)s" "%(prodName)s",%(trailStr)s,'
-                    '%(pageUrl)s' %glocals())
+                prevTrail+=[idx]
+                upsertOneModel()
+                prevTrail.pop()
                 continue
             tab.click()
             time.sleep(0.1)
@@ -234,7 +247,7 @@ def getAllModels():
     try:
         if path.exists('zyxel_models.txt') and \
                 path.getsize('zyxel_models.txt')>2 and \
-                time.time() - path.getmtime('zyxel_models.txt')<3600*1:
+                time.time() - path.getmtime('zyxel_models.txt')<3600*12:
             with open('zyxel_models.txt','r',encoding='utf-8') as fin:
                 lines = fin.read()
             allModels=[_ for _ in lines.splitlines()]
