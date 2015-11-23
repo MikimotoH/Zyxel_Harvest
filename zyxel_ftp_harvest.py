@@ -80,7 +80,7 @@ def main():
     global startTrail,prevTrail,conn
     try:
         startTrail = [int(re.search(r'\d+', _).group(0)) for _ in sys.argv[1:]]
-        conn= sqlite3.connect('zyxel.sqlite3')
+        conn= sqlite3.connect('zyxel_ftp.sqlite3')
         csr=conn.cursor()
         csr.execute(
             "CREATE TABLE IF NOT EXISTS TFiles("
